@@ -1,0 +1,23 @@
+# Vabble Backend v1 Dependencies
+
+# Neo N3 blockchain
+neo3-boa>=0.12.0
+neo-mamba>=0.1.0
+
+# SpoonOS agents
+spoon-sdk>=0.1.0
+spoon-toolkits>=0.1.0
+
+# Environment and utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# CLI framework
+typer>=0.9.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Linting
+flake8>=6.1.0

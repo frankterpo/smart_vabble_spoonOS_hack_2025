@@ -1,0 +1,35 @@
+{
+  "name": "vabs_v2",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "compile": "bash scripts/neo-workflow/compile.sh",
+    "compile:invoice": "bash scripts/neo-workflow/compile-invoice.sh",
+    "compile:investor": "bash scripts/neo-workflow/compile-investor.sh",
+    "compile:registry": "bash scripts/neo-workflow/compile-registry.sh",
+    "generate-wallet": "bash scripts/neo-workflow/generate-wallet.sh",
+    "deploy": "node scripts/neo-workflow/deploy.js",
+    "deploy:local": "node scripts/neo-workflow/deploy-local.js",
+    "deploy:invoice:local": "node scripts/neo-workflow/deploy-invoice-local.js",
+    "deploy:investor:local": "node scripts/neo-workflow/deploy-investor-local.js",
+    "deploy:registry:local": "node scripts/neo-workflow/deploy-registry-local.js",
+    "invoke": "node scripts/neo-workflow/invoke.js",
+    "invoke:invoice": "node scripts/neo-workflow/invoke-invoice.js",
+    "invoke:investor": "node scripts/neo-workflow/invoke-investor.js",
+    "invoke:registry": "node scripts/neo-workflow/invoke-registry.js",
+    "invoke:settlement": "node scripts/neo-workflow/settlement-coordinator.js"
+  },
+  "dependencies": {
+    "@cityofzion/neon-js": "^5.5.0",
+    "chalk": "^5.6.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.1",
+    "body-parser": "^2.2.1",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

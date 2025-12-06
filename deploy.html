@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h3>Deploy N3 Smart Contract</h3>
+<button onclick="deploy()">Deploy</button>
+
+<script>
+async function deploy() {
+  const provider = new window.NEOLine.Init();
+  const neolineN3 = new window.NEOLineN3.Init();
+
+  // Replace these with your compiled NEF and manifest JSON:
+  const nefHex = ""; 
+  const manifest = {};
+
+  try {
+    const result = await neolineN3.Contract.deploy({
+      script: nefHex,
+      manifest: JSON.stringify(manifest),
+      network: "TestNet"
+    });
+    console.log("Deploy tx:", result);
+    alert("Deploy sent! TXID: " + result.txid);
+  } catch (err) {
+    console.error(err);
+    alert("Error: " + err.message);
+  }
+}
+</script>
+</body>
+</html>

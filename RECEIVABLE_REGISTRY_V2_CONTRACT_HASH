@@ -1,0 +1,9 @@
+
+> vabs_v2@1.0.0 deploy:registry:local
+> node scripts/neo-workflow/deploy-registry-local.js # copy hash -
+
+🚀 Deploying ReceivableRegistryV2 to LOCAL neo-express node...
+   RPC: http://localhost:50012
+   Magic: 672132064
+
+💡 Make sure neo-express is running: neo-express run

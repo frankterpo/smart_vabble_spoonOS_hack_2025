@@ -1,0 +1,9 @@
+
+> vabs_v2@1.0.0 deploy:invoice:local
+> node scripts/neo-workflow/deploy-invoice-local.js # -
+
+🚀 Deploying InvoiceAsset to LOCAL neo-express node...
+   RPC: http://localhost:5000
+   Magic: 56753
+
+💡 Make sure neo-express is running: neo-express run
