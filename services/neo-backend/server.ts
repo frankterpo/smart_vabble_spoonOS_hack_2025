@@ -1,10 +1,9 @@
 import express from 'express';
 import bodyParser from 'body-parser';
 import dotenv from 'dotenv';
-import chalk from 'chalk'; // Add chalk for beautiful logs
+import chalk from 'chalk';
 import * as neonFull from "@cityofzion/neon-js";
 
-// In CommonJS/TS compilation, neonFull seems to have the named exports directly.
 const { experimental, sc, wallet, u } = neonFull as any;
 
 dotenv.config();
@@ -12,13 +11,54 @@ dotenv.config();
 const app = express();
 app.use(bodyParser.json());
 
-// Default to port 4000 for SpoonOS integration
 const port = process.env.PORT || 4000;
 
-// Neo Configuration (Matches .env from deploy-all-testnet.js)
-const RPC_URL = process.env.NEO_LOCAL_RPC_URL || "https://testnet1.neo.coz.io:443";
-const MAGIC = parseInt(process.env.NEO_LOCAL_MAGIC || "894710606"); // Default to TestNet T5
+// ==========================================
+// NETWORK SWITCH: testnet | local
+// ==========================================
+// Set NEO_NETWORK in .env OR pass via command line:
+//   NEO_NETWORK=local node dist/server.cjs
+//   NEO_NETWORK=testnet node dist/server.cjs
+
+const NETWORK = process.env.NEO_NETWORK || "testnet";
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as pathLib from 'path';
+
+// Auto-detect local neo-express magic
+let localMagic = 677225975;
+try {
+    const configPath = pathLib.join(os.homedir(), '.neo-express', 'default.neo-express');
+    const neoExpressConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    localMagic = neoExpressConfig.magic;
+} catch (e) { /* use default */ }
+
+const NETWORKS: Record<string, { rpc: string; magic: number; explorer: string | null; prefix: string }> = {
+    local: {
+        rpc: "http://localhost:50012",
+        magic: localMagic,
+        explorer: null,
+        prefix: "LOCAL_"
+    },
+    testnet: {
+        rpc: "https://testnet1.neo.coz.io:443",
+        magic: 894710606,
+        explorer: "https://testnet.neotube.io",
+        prefix: "TESTNET_"
+    }
+};
+
+const NET = NETWORKS[NETWORK] || NETWORKS.testnet;
+const RPC_URL = NET.rpc;
+const MAGIC = NET.magic;
+const EXPLORER_URL = NET.explorer;
 const WIF = process.env.NEO_WALLET_WIF;
+
+// Get contract hash based on network prefix
+function getContractHash(name: string): string | undefined {
+    return process.env[`${NET.prefix}${name}`];
+}
 
 // Helper for Endianness
 function toBigEndian(hex: string) {
@@ -39,14 +79,14 @@ function decodeResult(rawValue: any) {
     return decoded;
 }
 
-// Contract Hashes (Standardized names from .env)
+// Contract Hashes (auto-selected by network)
 const CONTRACTS = {
-    INVOICE: process.env.INVOICE_ASSET_CONTRACT_HASH,
-    INVESTOR: process.env.INVESTOR_SHARE_CONTRACT_HASH,
-    REGISTRY: process.env.RECEIVABLE_REGISTRY_V2_CONTRACT_HASH,
-    EXPORTER: process.env.EXPORTER_REGISTRY_CONTRACT_HASH,
-    IMPORTER: process.env.IMPORTER_TERMS_CONTRACT_HASH,
-    DD: process.env.DD_REGISTRY_CONTRACT_HASH
+    INVOICE: getContractHash("INVOICE_ASSET"),
+    INVESTOR: getContractHash("INVESTOR_SHARE"),
+    REGISTRY: getContractHash("REGISTRY"),
+    EXPORTER: getContractHash("EXPORTER"),
+    IMPORTER: getContractHash("IMPORTER"),
+    DD: getContractHash("DD")
 };
 
 const RAW_HASHES = {
@@ -54,13 +94,6 @@ const RAW_HASHES = {
     INVESTOR: CONTRACTS.INVESTOR ? CONTRACTS.INVESTOR.replace(/^0x/, "") : "",
     EXPORTER: CONTRACTS.EXPORTER ? CONTRACTS.EXPORTER.replace(/^0x/, "") : ""
 };
-
-if (!CONTRACTS.INVOICE || !CONTRACTS.INVESTOR || !CONTRACTS.REGISTRY) {
-    console.warn(chalk.yellow("⚠️  WARNING: One or more core contract hashes are missing in .env"));
-}
-if (!CONTRACTS.EXPORTER) {
-    console.warn(chalk.yellow("⚠️  INFO: EXPORTER_REGISTRY_CONTRACT_HASH not set (Phase 1 V2)"));
-}
 
 // Setup Neo Account & Config
 let account: any;
@@ -80,9 +113,104 @@ const neoConfig = {
 function getContract(hashStr: string | undefined) {
     if (!account) throw new Error("Server configured without valid WIF");
     if (!hashStr) throw new Error("Contract hash not configured");
-    const hashBig = toBigEndian(hashStr);
-    return new experimental.SmartContract(u.HexString.fromHex(hashBig), neoConfig);
+    // Hashes in .env are already big-endian (display format), just strip 0x
+    const hashHex = hashStr.replace(/^0x/, "");
+    return new experimental.SmartContract(u.HexString.fromHex(hashHex), neoConfig);
 }
+
+// ==========================================
+// INVESTOR ECONOMICS (FIXED RATES)
+// ==========================================
+// Exporter pays:  9.99% annualized discount (sells receivable at discount)
+// Investor gets:  7.00% annualized return (buys at discount, receives face value)
+// Vabble keeps:   2.99% spread (risk-free execution fee)
+//
+// NO NEGOTIATION - Vabble matches deals to investor preferences and executes
+
+const PLATFORM_RATES = {
+    EXPORTER_DISCOUNT_BPS: 999,   // 9.99% - what exporter pays
+    INVESTOR_RETURN_BPS: 700,     // 7.00% - what investor earns
+    VABBLE_SPREAD_BPS: 299        // 2.99% - platform keeps
+};
+
+interface InvestorPreferences {
+    maxTermDays: number;         // e.g., 90 days max
+    minDealSize: number;         // e.g., $10,000 minimum
+    maxDealSize: number;         // e.g., $500,000 maximum
+    preferredSectors: string[];  // e.g., ["agriculture", "manufacturing"]
+    acceptedCountries: string[]; // e.g., ["VE", "PE", "CO"]
+}
+
+interface DealCalculation {
+    faceValue: number;
+    termDays: number;
+}
+
+function calculateDeal(params: DealCalculation) {
+    const { faceValue, termDays } = params;
+    const termFraction = termDays / 365;
+    
+    // Total discount exporter pays (9.99% annualized)
+    const totalDiscount = faceValue * (PLATFORM_RATES.EXPORTER_DISCOUNT_BPS / 10000) * termFraction;
+    
+    // What investor pays (face value minus total discount)
+    const investorPays = faceValue - totalDiscount;
+    
+    // Investor receives full face value at maturity
+    const investorReceives = faceValue;
+    
+    // Investor profit (7% of what they paid, annualized)
+    const investorProfit = faceValue * (PLATFORM_RATES.INVESTOR_RETURN_BPS / 10000) * termFraction;
+    
+    // Vabble fee (the spread: 2.99%)
+    const vabbleFee = totalDiscount - investorProfit;
+    
+    return {
+        faceValue,
+        termDays,
+        // Exporter side
+        exporterReceives: Math.round(investorPays * 100) / 100,
+        exporterDiscount: Math.round(totalDiscount * 100) / 100,
+        exporterDiscountPercent: Math.round((totalDiscount / faceValue) * 10000) / 100,
+        // Investor side  
+        investorPays: Math.round(investorPays * 100) / 100,
+        investorReceives: Math.round(investorReceives * 100) / 100,
+        investorProfit: Math.round(investorProfit * 100) / 100,
+        investorYieldBps: PLATFORM_RATES.INVESTOR_RETURN_BPS,
+        // Platform
+        vabbleFee: Math.round(vabbleFee * 100) / 100,
+        vabbleSpreadBps: PLATFORM_RATES.VABBLE_SPREAD_BPS
+    };
+}
+
+// Check if deal matches investor preferences
+function dealMatchesPreferences(
+    preferences: InvestorPreferences,
+    termDays: number,
+    faceValue: number,
+    sector?: string,
+    country?: string
+): { matches: boolean; reason?: string } {
+    if (termDays > preferences.maxTermDays) {
+        return { matches: false, reason: `Term ${termDays}d exceeds max ${preferences.maxTermDays}d` };
+    }
+    if (faceValue < preferences.minDealSize) {
+        return { matches: false, reason: `Size $${faceValue} below min $${preferences.minDealSize}` };
+    }
+    if (faceValue > preferences.maxDealSize) {
+        return { matches: false, reason: `Size $${faceValue} exceeds max $${preferences.maxDealSize}` };
+    }
+    if (sector && preferences.preferredSectors.length > 0 && !preferences.preferredSectors.includes(sector)) {
+        return { matches: false, reason: `Sector ${sector} not in preferred: ${preferences.preferredSectors.join(', ')}` };
+    }
+    if (country && preferences.acceptedCountries.length > 0 && !preferences.acceptedCountries.includes(country)) {
+        return { matches: false, reason: `Country ${country} not accepted` };
+    }
+    return { matches: true };
+}
+
+// In-memory investor profiles
+const investorProfiles: Map<string, InvestorPreferences> = new Map();
 
 // ==========================================
 // LOGGING HELPERS (Polished for Demo)
@@ -91,14 +219,21 @@ function getContract(hashStr: string | undefined) {
 function logRequest(tool: string, body: any) {
     const time = new Date().toLocaleTimeString();
     console.log(chalk.gray(`[${time}] `) + chalk.blueBright(`⚡ SpoonOS Call: `) + chalk.bold.white(tool));
-    // Filter out potentially large or sensitive fields if any (none currently in schema)
     console.log(chalk.gray(`       Payload: `) + JSON.stringify(body));
 }
 
 function logSuccess(tool: string, txid: string) {
     console.log(chalk.green(`       ✔ Success! `) + chalk.gray(`TXID: `) + chalk.yellow(txid));
-    console.log(chalk.gray(`       🔗 Explorer: `) + chalk.cyan.underline(`https://testnet.neotube.io/transaction/${txid}`));
-    console.log(""); // Spacer
+    if (EXPLORER_URL) {
+        console.log(chalk.gray(`       🔗 Explorer: `) + chalk.cyan.underline(`${EXPLORER_URL}/transaction/${txid}`));
+    } else {
+        console.log(chalk.gray(`       📍 Local neo-express (no explorer)`));
+    }
+    console.log("");
+}
+
+function getExplorerUrl(txid: string): string | null {
+    return EXPLORER_URL ? `${EXPLORER_URL}/transaction/${txid}` : null;
 }
 
 function logError(tool: string, error: any) {
@@ -867,6 +1002,215 @@ app.post('/investor/allocate', async (req, res) => {
     }
 });
 
+// ==========================================
+// INVESTOR PROFILE & DEAL ENDPOINTS
+// ==========================================
+
+// Register Investor Profile (preferences for matching - NO negotiation)
+// POST /investor/profile
+app.post('/investor/profile', async (req, res) => {
+    const toolName = "register_investor_profile";
+    logRequest(toolName, req.body);
+
+    try {
+        const { 
+            investorId, 
+            maxTermDays = 90,
+            minDealSize = 10000,
+            maxDealSize = 500000,
+            preferredSectors = [],
+            acceptedCountries = []
+        } = req.body;
+
+        if (!investorId) {
+            throw new Error("investorId is required");
+        }
+
+        const preferences: InvestorPreferences = {
+            maxTermDays,
+            minDealSize,
+            maxDealSize,
+            preferredSectors,
+            acceptedCountries
+        };
+
+        investorProfiles.set(investorId, preferences);
+
+        console.log(chalk.green(`       ✔ Investor profile registered`));
+        console.log(chalk.gray(`       📊 Fixed Return: 7.00% | Max Term: ${maxTermDays}d | Size: $${minDealSize}-$${maxDealSize}`));
+        
+        res.json({ 
+            success: true, 
+            investorId,
+            preferences,
+            fixedRates: {
+                investorReturn: "7.00% annualized",
+                exporterPays: "9.99% annualized discount",
+                vabbleSpread: "2.99%"
+            },
+            message: `Investor ${investorId} registered. Deals matching preferences will be auto-executed at 7% return.`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Get Investor Profile
+// GET /investor/profile/:investorId
+app.get('/investor/profile/:investorId', (req, res) => {
+    const { investorId } = req.params;
+    const profile = investorProfiles.get(investorId);
+    
+    if (!profile) {
+        return res.status(404).json({ success: false, error: "Investor not found" });
+    }
+    
+    res.json({ 
+        success: true, 
+        investorId, 
+        preferences: profile,
+        fixedRates: PLATFORM_RATES
+    });
+});
+
+// Calculate Deal (fixed rates - shows exporter and investor economics)
+// POST /investor/calculate-deal
+app.post('/investor/calculate-deal', (req, res) => {
+    const toolName = "calculate_deal";
+    logRequest(toolName, req.body);
+
+    try {
+        const { faceValue, termDays } = req.body;
+
+        if (!faceValue || !termDays) {
+            throw new Error("faceValue and termDays are required");
+        }
+
+        const deal = calculateDeal({ faceValue, termDays });
+
+        console.log(chalk.green(`       ✔ Deal calculated (fixed rates)`));
+        console.log(chalk.gray(`       💵 Face: $${faceValue} | Term: ${termDays}d`));
+        console.log(chalk.gray(`       🏭 Exporter receives: $${deal.exporterReceives} (pays ${deal.exporterDiscountPercent}% discount)`));
+        console.log(chalk.gray(`       💰 Investor pays: $${deal.investorPays} → receives: $${deal.investorReceives} (7% return)`));
+        console.log(chalk.gray(`       🏦 Vabble fee: $${deal.vabbleFee}`));
+        
+        res.json({ 
+            success: true, 
+            deal,
+            summary: {
+                forExporter: `Receive $${deal.exporterReceives} today for $${faceValue} receivable (${deal.exporterDiscountPercent}% discount, 9.99% annualized)`,
+                forInvestor: `Pay $${deal.investorPays}, receive $${deal.investorReceives} in ${termDays} days (7% annualized return)`,
+                forVabble: `$${deal.vabbleFee} platform fee (2.99% spread)`
+            }
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Check if deal matches investor preferences
+// POST /investor/check-match
+app.post('/investor/check-match', (req, res) => {
+    const toolName = "check_investor_match";
+    logRequest(toolName, req.body);
+
+    try {
+        const { investorId, invoiceId, faceValue, termDays, sector, country } = req.body;
+
+        const preferences = investorProfiles.get(investorId);
+        if (!preferences) {
+            return res.json({ 
+                success: true, 
+                matches: false, 
+                reason: "Investor not registered" 
+            });
+        }
+
+        const match = dealMatchesPreferences(preferences, termDays, faceValue, sector, country);
+        const deal = calculateDeal({ faceValue, termDays });
+
+        console.log(match.matches 
+            ? chalk.green(`       ✔ Deal matches ${investorId}'s preferences`)
+            : chalk.yellow(`       ⚠ Deal does not match: ${match.reason}`));
+        
+        res.json({ 
+            success: true,
+            invoiceId,
+            investorId,
+            matches: match.matches,
+            reason: match.reason,
+            dealIfExecuted: match.matches ? deal : null,
+            message: match.matches 
+                ? `Ready to execute - investor pays $${deal.investorPays}, earns $${deal.investorProfit}`
+                : `Cannot execute: ${match.reason}`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Execute Investment (auto-matched, fixed rates, on-chain)
+// POST /investor/execute
+app.post('/investor/execute', async (req, res) => {
+    const toolName = "execute_investment";
+    logRequest(toolName, req.body);
+
+    try {
+        const { invoiceId, investorId, faceValue, termDays, sector, country } = req.body;
+
+        // Check preferences
+        const preferences = investorProfiles.get(investorId);
+        if (preferences) {
+            const match = dealMatchesPreferences(preferences, termDays, faceValue, sector, country);
+            if (!match.matches) {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: `Deal does not match investor preferences: ${match.reason}` 
+                });
+            }
+        }
+
+        // Calculate at fixed rates
+        const deal = calculateDeal({ faceValue, termDays });
+
+        // Record on-chain
+        const contract = getContract(CONTRACTS.INVESTOR);
+        
+        console.log(chalk.magenta(`       → Recording investment on-chain (fixed 7% return)...`));
+        const txid = await contract.invoke("allocate", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex")),
+            sc.ContractParam.byteArray(Buffer.from(investorId, "utf-8").toString("hex")),
+            sc.ContractParam.integer(Math.round(deal.investorPays * 100))
+        ]);
+
+        logSuccess(toolName, txid);
+        
+        res.json({ 
+            success: true,
+            txid,
+            investment: {
+                invoiceId,
+                investorId,
+                faceValue: deal.faceValue,
+                termDays: deal.termDays,
+                investorPays: deal.investorPays,
+                investorReceives: deal.investorReceives,
+                investorProfit: deal.investorProfit,
+                investorYield: "7.00%",
+                vabbleFee: deal.vabbleFee,
+                maturityDate: new Date(Date.now() + termDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+            },
+            explorer: getExplorerUrl(txid)
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // TOOL 3: Register Invoice in Registry
 // POST /registry/register
 app.post('/registry/register', async (req, res) => {
@@ -976,9 +1320,17 @@ app.listen(port, () => {
     console.log(chalk.bold.green("🚀 Vabble Neo Backend Service - READY"));
     console.log(chalk.gray("───────────────────────────────────────"));
     console.log(chalk.white(`📡 Port:     `) + chalk.cyan(port));
-    console.log(chalk.white(`🌍 Network:  `) + chalk.cyan("Neo N3 TestNet"));
+    console.log(chalk.white(`🌍 Network:  `) + (NETWORK === "local" 
+        ? chalk.magenta(`🧪 LOCAL (neo-express)`)
+        : chalk.cyan(`🌐 TESTNET (Neo N3 T5)`)));
     console.log(chalk.white(`🔗 RPC:      `) + chalk.gray(RPC_URL));
     console.log(chalk.white(`🔑 Wallet:   `) + chalk.yellow(account ? account.address : "Invalid"));
+    if (NETWORK === "local") {
+        console.log(chalk.magenta(`\n💡 LOCAL MODE - Free & instant, no GAS`));
+        console.log(chalk.gray(`   Ensure neo-express is running: npm run neoxp:start`));
+    } else {
+        console.log(chalk.cyan(`\n💰 TESTNET MODE - Real chain, costs GAS`));
+    }
     console.log(chalk.gray("───────────────────────────────────────"));
     console.log(chalk.gray("Waiting for SpoonOS tool calls...\n"));
 });
