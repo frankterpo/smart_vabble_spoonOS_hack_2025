@@ -45,7 +45,8 @@ const CONTRACTS = {
     INVESTOR: process.env.INVESTOR_SHARE_CONTRACT_HASH,
     REGISTRY: process.env.RECEIVABLE_REGISTRY_V2_CONTRACT_HASH,
     EXPORTER: process.env.EXPORTER_REGISTRY_CONTRACT_HASH,
-    IMPORTER: process.env.IMPORTER_TERMS_CONTRACT_HASH
+    IMPORTER: process.env.IMPORTER_TERMS_CONTRACT_HASH,
+    DD: process.env.DD_REGISTRY_CONTRACT_HASH
 };
 
 const RAW_HASHES = {
@@ -547,6 +548,255 @@ app.get('/importer/check/:importerId', async (req, res) => {
         console.log("");
         
         res.json({ success: true, importerId, isRegistered });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ==========================================
+// DD (DUE DILIGENCE) ENDPOINTS
+// ==========================================
+
+// TOOL: Set Exporter DD Status
+// POST /dd/exporter
+app.post('/dd/exporter', async (req, res) => {
+    const toolName = "set_exporter_dd";
+    logRequest(toolName, req.body);
+
+    try {
+        const { exporterId, kycTier, ddMerkleRoot, kycStatus } = req.body;
+        
+        if (!CONTRACTS.DD) {
+            throw new Error("DD_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.DD);
+        
+        // Convert merkle root to bytes (expects hex string or will use placeholder)
+        const merkleBytes = ddMerkleRoot 
+            ? Buffer.from(ddMerkleRoot.replace('0x', ''), 'hex').toString('hex')
+            : Buffer.alloc(32).toString('hex'); // 32-byte placeholder
+        
+        console.log(chalk.magenta(`       → Invoking DDRegistry.set_exporter_dd()...`));
+        const txid = await contract.invoke("set_exporter_dd", [
+            sc.ContractParam.byteArray(Buffer.from(exporterId, "utf-8").toString("hex")),
+            sc.ContractParam.string(kycTier || "PENDING"),
+            sc.ContractParam.byteArray(merkleBytes),
+            sc.ContractParam.string(kycStatus || "PENDING")
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            exporterId,
+            kycTier,
+            kycStatus,
+            message: `Exporter DD status set: ${kycTier} / ${kycStatus}`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Set Invoice DD Status
+// POST /dd/invoice
+app.post('/dd/invoice', async (req, res) => {
+    const toolName = "set_invoice_dd";
+    logRequest(toolName, req.body);
+
+    try {
+        const { invoiceId, docsStatus, docBundleHash, hasBl, hasPo, hasInsurance } = req.body;
+        
+        if (!CONTRACTS.DD) {
+            throw new Error("DD_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.DD);
+        
+        // Convert doc hash to bytes
+        const hashBytes = docBundleHash 
+            ? Buffer.from(docBundleHash.replace('0x', ''), 'hex').toString('hex')
+            : Buffer.alloc(32).toString('hex');
+        
+        console.log(chalk.magenta(`       → Invoking DDRegistry.set_invoice_dd()...`));
+        const txid = await contract.invoke("set_invoice_dd", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex")),
+            sc.ContractParam.string(docsStatus || "MISSING"),
+            sc.ContractParam.byteArray(hashBytes),
+            sc.ContractParam.boolean(hasBl || false),
+            sc.ContractParam.boolean(hasPo || false),
+            sc.ContractParam.boolean(hasInsurance || false)
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            invoiceId,
+            docsStatus,
+            hasBl,
+            hasPo,
+            hasInsurance,
+            message: `Invoice DD: ${docsStatus} | BL:${hasBl} PO:${hasPo} INS:${hasInsurance}`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Get Exporter DD Status
+// GET /dd/exporter/:exporterId
+app.get('/dd/exporter/:exporterId', async (req, res) => {
+    const toolName = "get_exporter_dd";
+    const exporterId = req.params.exporterId;
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.gray(`[${time}] `) + chalk.blueBright(`⚡ SpoonOS Call: `) + chalk.bold.white(toolName));
+    console.log(chalk.gray(`       Query: `) + exporterId);
+
+    try {
+        if (!CONTRACTS.DD) {
+            throw new Error("DD_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.DD);
+        const idBytes = Buffer.from(exporterId, "utf-8").toString("hex");
+        
+        // Get KYC tier
+        const tierResult = await contract.testInvoke("get_exporter_kyc_tier", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        
+        // Get KYC status
+        const statusResult = await contract.testInvoke("get_exporter_kyc_status", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        
+        // Get verifier
+        const verifierResult = await contract.testInvoke("get_exporter_verifier", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        
+        let kycTier = decodeResult(tierResult.stack?.[0]?.value) || "NOT_SET";
+        let kycStatus = decodeResult(statusResult.stack?.[0]?.value) || "NOT_SET";
+        let verifier = decodeResult(verifierResult.stack?.[0]?.value) || null;
+        
+        console.log(chalk.green(`       ✔ KYC Tier: ${kycTier}, Status: ${kycStatus}`));
+        console.log("");
+        
+        res.json({ 
+            success: true, 
+            exporterId, 
+            kycTier, 
+            kycStatus,
+            verifier,
+            ddComplete: kycStatus === 'APPROVED'
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Get Invoice DD Status
+// GET /dd/invoice/:invoiceId
+app.get('/dd/invoice/:invoiceId', async (req, res) => {
+    const toolName = "get_invoice_dd";
+    const invoiceId = req.params.invoiceId;
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.gray(`[${time}] `) + chalk.blueBright(`⚡ SpoonOS Call: `) + chalk.bold.white(toolName));
+    console.log(chalk.gray(`       Query: `) + invoiceId);
+
+    try {
+        if (!CONTRACTS.DD) {
+            throw new Error("DD_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.DD);
+        const idBytes = Buffer.from(invoiceId, "utf-8").toString("hex");
+        
+        // Get docs status
+        const statusResult = await contract.testInvoke("get_invoice_docs_status", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        
+        // Get document flags
+        const blResult = await contract.testInvoke("has_bill_of_lading", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        const poResult = await contract.testInvoke("has_purchase_order", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        const insResult = await contract.testInvoke("has_insurance", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        
+        // Check if DD complete
+        const completeResult = await contract.testInvoke("is_dd_complete", [
+            sc.ContractParam.byteArray(idBytes)
+        ]);
+        
+        let docsStatus = decodeResult(statusResult.stack?.[0]?.value) || "NOT_SET";
+        let hasBl = blResult.stack?.[0]?.value === true || blResult.stack?.[0]?.value === 1;
+        let hasPo = poResult.stack?.[0]?.value === true || poResult.stack?.[0]?.value === 1;
+        let hasInsurance = insResult.stack?.[0]?.value === true || insResult.stack?.[0]?.value === 1;
+        let ddComplete = completeResult.stack?.[0]?.value === true || completeResult.stack?.[0]?.value === 1;
+        
+        console.log(chalk.green(`       ✔ Docs: ${docsStatus} | BL:${hasBl} PO:${hasPo} INS:${hasInsurance}`));
+        console.log("");
+        
+        res.json({ 
+            success: true, 
+            invoiceId, 
+            docsStatus,
+            hasBl,
+            hasPo,
+            hasInsurance,
+            ddComplete
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Verify DD (mark as verified by Vabble)
+// POST /dd/verify
+app.post('/dd/verify', async (req, res) => {
+    const toolName = "verify_dd";
+    logRequest(toolName, req.body);
+
+    try {
+        const { entityId, entityType, verifier } = req.body;
+        
+        if (!CONTRACTS.DD) {
+            throw new Error("DD_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.DD);
+        const method = entityType === 'exporter' ? 'verify_exporter_dd' : 'verify_invoice_dd';
+        
+        console.log(chalk.magenta(`       → Invoking DDRegistry.${method}()...`));
+        const txid = await contract.invoke(method, [
+            sc.ContractParam.byteArray(Buffer.from(entityId, "utf-8").toString("hex")),
+            sc.ContractParam.string(verifier || "vabble_ops")
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            entityId,
+            entityType,
+            verifier,
+            message: `✅ DD VERIFIED by ${verifier || 'vabble_ops'}`
+        });
     } catch (error: any) {
         logError(toolName, error);
         res.status(500).json({ success: false, error: error.message });
