@@ -25,9 +25,9 @@ Vabble is an autonomous AI agent that tokenizes, finances, and settles real-worl
 
 This infrastructure is live on Neo N3 TestNet.
 
-*   **InvoiceAsset Contract**: [Explorer](https://testnet.neotube.io/contract/0x566f9599926df494a64854f33be188c5ad073d26)
-*   **InvestorShare Contract**: [Explorer](https://testnet.neotube.io/contract/0x4a6d38ca03b790f8c9913c1d1ee33b7b66b94f28)
-*   **Registry Contract**: [Explorer](https://testnet.neotube.io/contract/0x198f17ecebce01b20ee07d8e46813b281dacd9eb)
+*   **InvoiceAsset Contract**: [Explorer](https://testnet.neotube.io/contract/566f9599926df494a64854f33be188c5ad073d26)
+*   **InvestorShare Contract**: [Explorer](https://testnet.neotube.io/contract/4a6d38ca03b790f8c9913c1d1ee33b7b66b94f28)
+*   **Registry Contract**: [Explorer](https://testnet.neotube.io/contract/198f17ecebce01b20ee07d8e46813b281dacd9eb)
 
 ## 🛠 Installation & Usage
 
