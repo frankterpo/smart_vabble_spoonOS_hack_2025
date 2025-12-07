@@ -7,17 +7,22 @@
     "compile:invoice": "bash scripts/neo-workflow/compile-invoice.sh",
     "compile:investor": "bash scripts/neo-workflow/compile-investor.sh",
     "compile:registry": "bash scripts/neo-workflow/compile-registry.sh",
+    "compile:exporter": "bash scripts/neo-workflow/compile-exporter.sh",
     "generate-wallet": "bash scripts/neo-workflow/generate-wallet.sh",
     "deploy": "node scripts/neo-workflow/deploy.js",
     "deploy:local": "node scripts/neo-workflow/deploy-local.js",
     "deploy:invoice:local": "node scripts/neo-workflow/deploy-invoice-local.js",
     "deploy:investor:local": "node scripts/neo-workflow/deploy-investor-local.js",
     "deploy:registry:local": "node scripts/neo-workflow/deploy-registry-local.js",
+    "deploy:exporter": "node scripts/neo-workflow/deploy-exporter-testnet.js",
     "invoke": "node scripts/neo-workflow/invoke.js",
     "invoke:invoice": "node scripts/neo-workflow/invoke-invoice.js",
     "invoke:investor": "node scripts/neo-workflow/invoke-investor.js",
     "invoke:registry": "node scripts/neo-workflow/invoke-registry.js",
-    "invoke:settlement": "node scripts/neo-workflow/settlement-coordinator.js"
+    "invoke:settlement": "node scripts/neo-workflow/settlement-coordinator.js",
+    "backend": "npx tsc && node dist/server.cjs",
+    "agent": "cd scripts/agent && python3 vabble_agent_v2.py",
+    "agent:demo": "cd scripts/agent && python3 vabble_agent_v2.py demo"
   },
   "dependencies": {
     "@cityofzion/neon-js": "^5.5.0",

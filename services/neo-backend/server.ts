@@ -43,16 +43,21 @@ function decodeResult(rawValue: any) {
 const CONTRACTS = {
     INVOICE: process.env.INVOICE_ASSET_CONTRACT_HASH,
     INVESTOR: process.env.INVESTOR_SHARE_CONTRACT_HASH,
-    REGISTRY: process.env.RECEIVABLE_REGISTRY_V2_CONTRACT_HASH
+    REGISTRY: process.env.RECEIVABLE_REGISTRY_V2_CONTRACT_HASH,
+    EXPORTER: process.env.EXPORTER_REGISTRY_CONTRACT_HASH
 };
 
 const RAW_HASHES = {
     INVOICE: CONTRACTS.INVOICE ? CONTRACTS.INVOICE.replace(/^0x/, "") : "",
-    INVESTOR: CONTRACTS.INVESTOR ? CONTRACTS.INVESTOR.replace(/^0x/, "") : ""
+    INVESTOR: CONTRACTS.INVESTOR ? CONTRACTS.INVESTOR.replace(/^0x/, "") : "",
+    EXPORTER: CONTRACTS.EXPORTER ? CONTRACTS.EXPORTER.replace(/^0x/, "") : ""
 };
 
 if (!CONTRACTS.INVOICE || !CONTRACTS.INVESTOR || !CONTRACTS.REGISTRY) {
-    console.warn(chalk.yellow("⚠️  WARNING: One or more contract hashes are missing in .env"));
+    console.warn(chalk.yellow("⚠️  WARNING: One or more core contract hashes are missing in .env"));
+}
+if (!CONTRACTS.EXPORTER) {
+    console.warn(chalk.yellow("⚠️  INFO: EXPORTER_REGISTRY_CONTRACT_HASH not set (Phase 1 V2)"));
 }
 
 // Setup Neo Account & Config
@@ -112,10 +117,239 @@ app.get('/health', (req, res) => {
         contracts: {
             invoice: !!CONTRACTS.INVOICE,
             investor: !!CONTRACTS.INVESTOR,
-            registry: !!CONTRACTS.REGISTRY
+            registry: !!CONTRACTS.REGISTRY,
+            exporter: !!CONTRACTS.EXPORTER
         }
     });
 });
+
+// ==========================================
+// PHASE 1: EXPORTER FLOW ENDPOINTS
+// ==========================================
+
+// TOOL: Register Exporter Profile
+// POST /exporter/profile
+app.post('/exporter/profile', async (req, res) => {
+    const toolName = "register_exporter_profile";
+    logRequest(toolName, req.body);
+
+    try {
+        const { exporterId, companyName, country, sector } = req.body;
+        
+        if (!CONTRACTS.EXPORTER) {
+            throw new Error("EXPORTER_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.EXPORTER);
+        
+        console.log(chalk.magenta(`       → Invoking ExporterRegistry.register_profile()...`));
+        const txid = await contract.invoke("register_profile", [
+            sc.ContractParam.byteArray(Buffer.from(exporterId, "utf-8").toString("hex")),
+            sc.ContractParam.string(companyName || "Unknown Company"),
+            sc.ContractParam.string(country || "XX"),
+            sc.ContractParam.string(sector || "general")
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            exporterId,
+            message: `Exporter ${companyName} registered successfully`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Get Exporter Profile
+// GET /exporter/profile/:exporterId
+app.get('/exporter/profile/:exporterId', async (req, res) => {
+    const toolName = "get_exporter_profile";
+    const exporterId = req.params.exporterId;
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.gray(`[${time}] `) + chalk.blueBright(`⚡ SpoonOS Call: `) + chalk.bold.white(toolName));
+    console.log(chalk.gray(`       Query: `) + exporterId);
+
+    try {
+        if (!CONTRACTS.EXPORTER) {
+            throw new Error("EXPORTER_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.EXPORTER);
+        
+        console.log(chalk.magenta(`       → Reading ExporterRegistry.get_profile()...`));
+        const result = await contract.testInvoke("get_profile", [
+            sc.ContractParam.byteArray(Buffer.from(exporterId, "utf-8").toString("hex"))
+        ]);
+        
+        let profile = null;
+        if (result.state === "HALT" && result.stack && result.stack.length > 0) {
+            const raw = decodeResult(result.stack[0].value);
+            if (raw) {
+                const parts = raw.split('|');
+                profile = {
+                    exporterId,
+                    companyName: parts[0] || '',
+                    country: parts[1] || '',
+                    sector: parts[2] || ''
+                };
+            }
+        }
+        
+        console.log(chalk.green(`       ✔ Result: `) + (profile ? JSON.stringify(profile) : "Not found"));
+        console.log("");
+        
+        res.json({ success: true, profile });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Create Invoice Request (combines InvoiceAsset + Registry registration)
+// POST /exporter/invoice-request
+app.post('/exporter/invoice-request', async (req, res) => {
+    const toolName = "exporter_create_invoice_request";
+    logRequest(toolName, req.body);
+
+    try {
+        const { 
+            exporterId, 
+            invoiceId, 
+            buyerName, 
+            buyerCountry,
+            faceValue, 
+            currency, 
+            dueDate, 
+            minYield,
+            maxTenorDays,
+            meta 
+        } = req.body;
+        
+        // 1. Register in InvoiceAsset
+        const invoiceContract = getContract(CONTRACTS.INVOICE);
+        console.log(chalk.magenta(`       → Step 1: InvoiceAsset.register_invoice()...`));
+        
+        const tx1 = await invoiceContract.invoke("register_invoice", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex")),
+            sc.ContractParam.string(buyerName || "Unknown Buyer"),
+            sc.ContractParam.string(exporterId || "Unknown Exporter"),
+            sc.ContractParam.integer(faceValue || 0),
+            sc.ContractParam.string(currency || "USD"),
+            sc.ContractParam.integer(dueDate || 20251231),
+            sc.ContractParam.string(JSON.stringify({
+                buyerCountry: buyerCountry || "",
+                minYield: minYield || 0,
+                maxTenorDays: maxTenorDays || 90,
+                ...(meta || {})
+            }))
+        ]);
+        console.log(chalk.green(`       ✔ InvoiceAsset TX: `) + chalk.yellow(tx1));
+        
+        // 2. Register in Registry
+        const registryContract = getContract(CONTRACTS.REGISTRY);
+        console.log(chalk.magenta(`       → Step 2: RegistryV2.register_invoice()...`));
+        
+        const tx2 = await registryContract.invoke("register_invoice", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex")),
+            sc.ContractParam.string(RAW_HASHES.INVOICE)
+        ]);
+        console.log(chalk.green(`       ✔ Registry TX: `) + chalk.yellow(tx2));
+        
+        console.log(chalk.green(`       ✔ Invoice request created successfully!`));
+        console.log(chalk.gray(`       🔗 Explorer: `) + chalk.cyan.underline(`https://testnet.neotube.io/transaction/${tx2}`));
+        console.log("");
+        
+        res.json({ 
+            success: true, 
+            invoiceId,
+            invoiceAssetTxid: tx1,
+            registryTxid: tx2,
+            explorer: `https://testnet.neotube.io/transaction/${tx2}`,
+            message: `Invoice ${invoiceId} created and registered for financing`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Check if Exporter is Registered
+// GET /exporter/check/:exporterId
+app.get('/exporter/check/:exporterId', async (req, res) => {
+    const toolName = "check_exporter_registered";
+    const exporterId = req.params.exporterId;
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.gray(`[${time}] `) + chalk.blueBright(`⚡ SpoonOS Call: `) + chalk.bold.white(toolName));
+    console.log(chalk.gray(`       Query: `) + exporterId);
+
+    try {
+        if (!CONTRACTS.EXPORTER) {
+            throw new Error("EXPORTER_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.EXPORTER);
+        
+        console.log(chalk.magenta(`       → Reading ExporterRegistry.is_registered()...`));
+        const result = await contract.testInvoke("is_registered", [
+            sc.ContractParam.byteArray(Buffer.from(exporterId, "utf-8").toString("hex"))
+        ]);
+        
+        let isRegistered = false;
+        if (result.state === "HALT" && result.stack && result.stack.length > 0) {
+            isRegistered = result.stack[0].value === true || result.stack[0].value === 1;
+        }
+        
+        console.log(chalk.green(`       ✔ Result: `) + (isRegistered ? "Registered" : "Not registered"));
+        console.log("");
+        
+        res.json({ success: true, exporterId, isRegistered });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Link Invoice to Exporter
+// POST /exporter/invoice-link
+app.post('/exporter/invoice-link', async (req, res) => {
+    const toolName = "link_exporter_invoice";
+    logRequest(toolName, req.body);
+
+    try {
+        const { exporterId, invoiceId } = req.body;
+        
+        if (!CONTRACTS.EXPORTER) {
+            throw new Error("EXPORTER_REGISTRY_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.EXPORTER);
+        
+        console.log(chalk.magenta(`       → Invoking ExporterRegistry.link_invoice()...`));
+        const txid = await contract.invoke("link_invoice", [
+            sc.ContractParam.byteArray(Buffer.from(exporterId, "utf-8").toString("hex")),
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex"))
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            message: `Invoice ${invoiceId} linked to exporter ${exporterId}`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ==========================================
+// CORE V1 ENDPOINTS
+// ==========================================
 
 // TOOL 1: Register Invoice
 // POST /invoice/register
