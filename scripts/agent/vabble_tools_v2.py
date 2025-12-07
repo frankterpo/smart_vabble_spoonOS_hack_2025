@@ -279,6 +279,129 @@ def exporter_create_invoice_request(
 
 
 # ==========================================
+# V2 IMPORTER MODE TOOLS (Phase 2)
+# ==========================================
+
+def register_importer_profile(importer_id: str, company_name: str, country: str):
+    """
+    Register a new importer (buyer) profile on-chain.
+    
+    Args:
+        importer_id (str): Unique importer ID
+        company_name (str): Company name (e.g., Walmart, Nestle)
+        country (str): ISO country code (e.g., US, CH)
+    
+    Returns:
+        dict with txid and explorer link
+    """
+    url = f"{BACKEND_URL}/importer/profile"
+    payload = {
+        "importerId": importer_id,
+        "companyName": company_name,
+        "country": country
+    }
+    print(f"\n🛠️  TOOL: Registering importer profile for {company_name}...")
+    try:
+        resp = requests.post(url, json=payload)
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def register_importer_terms(invoice_id: str, importer_id: str, max_yield_bps: int, currency: str = "USD", jurisdiction: str = "US"):
+    """
+    Register financing terms for an invoice.
+    
+    Args:
+        invoice_id (str): Invoice ID to set terms for
+        importer_id (str): Importer setting the terms
+        max_yield_bps (int): Maximum yield in basis points (e.g., 850 = 8.5%)
+        currency (str): Settlement currency (default: USD)
+        jurisdiction (str): Legal jurisdiction (e.g., US, CH, UK)
+    
+    Returns:
+        dict with txid and explorer link
+    """
+    url = f"{BACKEND_URL}/importer/terms"
+    payload = {
+        "invoiceId": invoice_id,
+        "importerId": importer_id,
+        "maxYieldBps": max_yield_bps,
+        "currency": currency,
+        "jurisdiction": jurisdiction
+    }
+    print(f"\n🛠️  TOOL: Registering terms for {invoice_id} (max yield: {max_yield_bps/100}%)...")
+    try:
+        resp = requests.post(url, json=payload)
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def confirm_payable(invoice_id: str, importer_id: str):
+    """
+    Importer confirms the payable on-chain.
+    This is the cryptographic commitment that the buyer will pay.
+    
+    Args:
+        invoice_id (str): Invoice to confirm
+        importer_id (str): Importer making the confirmation
+    
+    Returns:
+        dict with txid and explorer link
+    """
+    url = f"{BACKEND_URL}/importer/confirm"
+    payload = {
+        "invoiceId": invoice_id,
+        "importerId": importer_id
+    }
+    print(f"\n🛠️  TOOL: Confirming payable {invoice_id} by {importer_id}...")
+    try:
+        resp = requests.post(url, json=payload)
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_importer_terms(invoice_id: str):
+    """
+    Get financing terms for an invoice.
+    
+    Args:
+        invoice_id (str): Invoice ID to query
+    
+    Returns:
+        dict with terms and confirmation status
+    """
+    url = f"{BACKEND_URL}/importer/terms/{invoice_id}"
+    print(f"\n🛠️  TOOL: Getting terms for {invoice_id}...")
+    try:
+        resp = requests.get(url)
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def check_importer_registered(importer_id: str):
+    """
+    Check if an importer is registered on-chain.
+    
+    Args:
+        importer_id (str): Importer ID to check
+    
+    Returns:
+        dict with isRegistered boolean
+    """
+    url = f"{BACKEND_URL}/importer/check/{importer_id}"
+    print(f"\n🛠️  TOOL: Checking registration for {importer_id}...")
+    try:
+        resp = requests.get(url)
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ==========================================
 # TOOL SCHEMAS (OpenAI Function Calling Format)
 # ==========================================
 
@@ -460,8 +583,88 @@ TOOLS_SCHEMA_EXPORTER = [
     }
 ]
 
+TOOLS_SCHEMA_IMPORTER = [
+    {
+        "type": "function",
+        "function": {
+            "name": "register_importer_profile",
+            "description": "Register a new importer (buyer) profile on-chain. Call this first for new importers like Walmart, Nestle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "importer_id": {"type": "string", "description": "Unique importer ID"},
+                    "company_name": {"type": "string", "description": "Company name (e.g., Walmart, Nestle)"},
+                    "country": {"type": "string", "description": "ISO country code (e.g., US, CH)"}
+                },
+                "required": ["importer_id", "company_name", "country"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "register_importer_terms",
+            "description": "Register financing terms for an invoice. Set max yield, currency, and jurisdiction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "invoice_id": {"type": "string", "description": "Invoice ID to set terms for"},
+                    "importer_id": {"type": "string", "description": "Importer setting the terms"},
+                    "max_yield_bps": {"type": "integer", "description": "Maximum yield in basis points (e.g., 850 = 8.5%)"},
+                    "currency": {"type": "string", "description": "Settlement currency (default: USD)"},
+                    "jurisdiction": {"type": "string", "description": "Legal jurisdiction (e.g., US, CH, UK)"}
+                },
+                "required": ["invoice_id", "importer_id", "max_yield_bps"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confirm_payable",
+            "description": "Importer confirms the payable on-chain. This is the cryptographic commitment that the buyer will pay.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "invoice_id": {"type": "string", "description": "Invoice to confirm"},
+                    "importer_id": {"type": "string", "description": "Importer making the confirmation"}
+                },
+                "required": ["invoice_id", "importer_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_importer_terms",
+            "description": "Get financing terms for an invoice including confirmation status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "invoice_id": {"type": "string", "description": "Invoice ID to query"}
+                },
+                "required": ["invoice_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_importer_registered",
+            "description": "Check if an importer is registered on-chain.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "importer_id": {"type": "string", "description": "Importer ID to check"}
+                },
+                "required": ["importer_id"]
+            }
+        }
+    }
+]
+
 # Combined V2 schema (all tools)
-TOOLS_SCHEMA = TOOLS_SCHEMA_V1 + TOOLS_SCHEMA_EXPORTER
+TOOLS_SCHEMA = TOOLS_SCHEMA_V1 + TOOLS_SCHEMA_EXPORTER + TOOLS_SCHEMA_IMPORTER
 
 # Tool mapping for execution
 TOOL_MAP = {
@@ -477,7 +680,13 @@ TOOL_MAP = {
     "get_exporter_profile": get_exporter_profile,
     "check_exporter_registered": check_exporter_registered,
     "link_exporter_invoice": link_exporter_invoice,
-    "exporter_create_invoice_request": exporter_create_invoice_request
+    "exporter_create_invoice_request": exporter_create_invoice_request,
+    # V2 Importer
+    "register_importer_profile": register_importer_profile,
+    "register_importer_terms": register_importer_terms,
+    "confirm_payable": confirm_payable,
+    "get_importer_terms": get_importer_terms,
+    "check_importer_registered": check_importer_registered
 }
 
 # Mode-specific tool sets
@@ -490,10 +699,20 @@ EXPORTER_TOOLS = [
     "query_invoice_status"
 ]
 
+IMPORTER_TOOLS = [
+    "register_importer_profile",
+    "check_importer_registered",
+    "register_importer_terms",
+    "confirm_payable",
+    "get_importer_terms",
+    "query_invoice_status"
+]
+
 INVESTOR_TOOLS = [
     "allocate_shares",
     "query_invoice_status",
-    "settle_invoice"
+    "settle_invoice",
+    "get_importer_terms"  # Investors need to see terms
 ]
 
 ADMIN_TOOLS = list(TOOL_MAP.keys())  # All tools

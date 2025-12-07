@@ -44,7 +44,8 @@ const CONTRACTS = {
     INVOICE: process.env.INVOICE_ASSET_CONTRACT_HASH,
     INVESTOR: process.env.INVESTOR_SHARE_CONTRACT_HASH,
     REGISTRY: process.env.RECEIVABLE_REGISTRY_V2_CONTRACT_HASH,
-    EXPORTER: process.env.EXPORTER_REGISTRY_CONTRACT_HASH
+    EXPORTER: process.env.EXPORTER_REGISTRY_CONTRACT_HASH,
+    IMPORTER: process.env.IMPORTER_TERMS_CONTRACT_HASH
 };
 
 const RAW_HASHES = {
@@ -341,6 +342,211 @@ app.post('/exporter/invoice-link', async (req, res) => {
             explorer: `https://testnet.neotube.io/transaction/${txid}`,
             message: `Invoice ${invoiceId} linked to exporter ${exporterId}`
         });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ==========================================
+// PHASE 2: IMPORTER FLOW ENDPOINTS
+// ==========================================
+
+// TOOL: Register Importer Profile
+// POST /importer/profile
+app.post('/importer/profile', async (req, res) => {
+    const toolName = "register_importer_profile";
+    logRequest(toolName, req.body);
+
+    try {
+        const { importerId, companyName, country } = req.body;
+        
+        if (!CONTRACTS.IMPORTER) {
+            throw new Error("IMPORTER_TERMS_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.IMPORTER);
+        
+        console.log(chalk.magenta(`       → Invoking ImporterTerms.register_importer()...`));
+        const txid = await contract.invoke("register_importer", [
+            sc.ContractParam.byteArray(Buffer.from(importerId, "utf-8").toString("hex")),
+            sc.ContractParam.string(companyName || "Unknown Company"),
+            sc.ContractParam.string(country || "XX")
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            importerId,
+            message: `Importer ${companyName} registered successfully`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Register Financing Terms
+// POST /importer/terms
+app.post('/importer/terms', async (req, res) => {
+    const toolName = "register_importer_terms";
+    logRequest(toolName, req.body);
+
+    try {
+        const { invoiceId, importerId, maxYieldBps, currency, jurisdiction } = req.body;
+        
+        if (!CONTRACTS.IMPORTER) {
+            throw new Error("IMPORTER_TERMS_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.IMPORTER);
+        
+        console.log(chalk.magenta(`       → Invoking ImporterTerms.register_terms()...`));
+        const txid = await contract.invoke("register_terms", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex")),
+            sc.ContractParam.byteArray(Buffer.from(importerId, "utf-8").toString("hex")),
+            sc.ContractParam.integer(maxYieldBps || 850),
+            sc.ContractParam.string(currency || "USD"),
+            sc.ContractParam.string(jurisdiction || "US")
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            invoiceId,
+            maxYieldBps,
+            message: `Terms registered: max yield ${(maxYieldBps || 850) / 100}% under ${jurisdiction || 'US'} law`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Confirm Payable (buyer commits to paying)
+// POST /importer/confirm
+app.post('/importer/confirm', async (req, res) => {
+    const toolName = "confirm_payable";
+    logRequest(toolName, req.body);
+
+    try {
+        const { invoiceId, importerId } = req.body;
+        
+        if (!CONTRACTS.IMPORTER) {
+            throw new Error("IMPORTER_TERMS_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.IMPORTER);
+        
+        console.log(chalk.magenta(`       → Invoking ImporterTerms.confirm_payable()...`));
+        const txid = await contract.invoke("confirm_payable", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex")),
+            sc.ContractParam.byteArray(Buffer.from(importerId, "utf-8").toString("hex"))
+        ]);
+        
+        logSuccess(toolName, txid);
+        res.json({ 
+            success: true, 
+            txid, 
+            explorer: `https://testnet.neotube.io/transaction/${txid}`,
+            invoiceId,
+            importerId,
+            message: `✅ Payable CONFIRMED on-chain! ${importerId} commits to paying invoice ${invoiceId}`
+        });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Get Terms for Invoice
+// GET /importer/terms/:invoiceId
+app.get('/importer/terms/:invoiceId', async (req, res) => {
+    const toolName = "get_importer_terms";
+    const invoiceId = req.params.invoiceId;
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.gray(`[${time}] `) + chalk.blueBright(`⚡ SpoonOS Call: `) + chalk.bold.white(toolName));
+    console.log(chalk.gray(`       Query: `) + invoiceId);
+
+    try {
+        if (!CONTRACTS.IMPORTER) {
+            throw new Error("IMPORTER_TERMS_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.IMPORTER);
+        
+        // Get terms
+        const termsResult = await contract.testInvoke("get_terms", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex"))
+        ]);
+        
+        // Get confirmation status
+        const confirmedResult = await contract.testInvoke("is_confirmed", [
+            sc.ContractParam.byteArray(Buffer.from(invoiceId, "utf-8").toString("hex"))
+        ]);
+        
+        let terms = null;
+        let isConfirmed = false;
+        
+        if (termsResult.state === "HALT" && termsResult.stack && termsResult.stack.length > 0) {
+            const raw = decodeResult(termsResult.stack[0].value);
+            if (raw) {
+                const parts = raw.split('|');
+                terms = {
+                    currency: parts[0] || 'USD',
+                    jurisdiction: parts[1] || 'US'
+                };
+            }
+        }
+        
+        if (confirmedResult.state === "HALT" && confirmedResult.stack && confirmedResult.stack.length > 0) {
+            isConfirmed = confirmedResult.stack[0].value === true || confirmedResult.stack[0].value === 1;
+        }
+        
+        console.log(chalk.green(`       ✔ Terms: `) + (terms ? JSON.stringify(terms) : "Not found"));
+        console.log(chalk.green(`       ✔ Confirmed: `) + isConfirmed);
+        console.log("");
+        
+        res.json({ success: true, invoiceId, terms, isConfirmed });
+    } catch (error: any) {
+        logError(toolName, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TOOL: Check if Importer is Registered
+// GET /importer/check/:importerId
+app.get('/importer/check/:importerId', async (req, res) => {
+    const toolName = "check_importer_registered";
+    const importerId = req.params.importerId;
+    const time = new Date().toLocaleTimeString();
+    console.log(chalk.gray(`[${time}] `) + chalk.blueBright(`⚡ SpoonOS Call: `) + chalk.bold.white(toolName));
+    console.log(chalk.gray(`       Query: `) + importerId);
+
+    try {
+        if (!CONTRACTS.IMPORTER) {
+            throw new Error("IMPORTER_TERMS_CONTRACT_HASH not configured in .env");
+        }
+        
+        const contract = getContract(CONTRACTS.IMPORTER);
+        
+        const result = await contract.testInvoke("is_importer_registered", [
+            sc.ContractParam.byteArray(Buffer.from(importerId, "utf-8").toString("hex"))
+        ]);
+        
+        let isRegistered = false;
+        if (result.state === "HALT" && result.stack && result.stack.length > 0) {
+            isRegistered = result.stack[0].value === true || result.stack[0].value === 1;
+        }
+        
+        console.log(chalk.green(`       ✔ Result: `) + (isRegistered ? "Registered" : "Not registered"));
+        console.log("");
+        
+        res.json({ success: true, importerId, isRegistered });
     } catch (error: any) {
         logError(toolName, error);
         res.status(500).json({ success: false, error: error.message });

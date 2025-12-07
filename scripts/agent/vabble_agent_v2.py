@@ -16,8 +16,10 @@ load_dotenv()
 from vabble_tools_v2 import (
     TOOLS_SCHEMA,
     TOOLS_SCHEMA_EXPORTER,
+    TOOLS_SCHEMA_IMPORTER,
     TOOL_MAP,
     EXPORTER_TOOLS,
+    IMPORTER_TOOLS,
     INVESTOR_TOOLS,
     ADMIN_TOOLS
 )
@@ -69,23 +71,57 @@ IMPORTANT:
 When responding, always explain what you're doing and provide transaction links when available.
 """
 
+SYSTEM_PROMPT_IMPORTER = SYSTEM_PROMPT_BASE + """
+CURRENT MODE: IMPORTER (Buyer)
+
+You are helping an IMPORTER (buyer like Walmart, Nestle, Costco) confirm invoices and set financing terms.
+
+IMPORTER WORKFLOW:
+1. First, register the importer profile (company name, country)
+2. Review invoices from exporters that need confirmation
+3. Set financing terms (max yield, currency, jurisdiction)
+4. Confirm the payable on-chain (cryptographic commitment to pay)
+
+AVAILABLE TOOLS:
+- register_importer_profile: Register new importer (first step!)
+- check_importer_registered: Quick registration check
+- register_importer_terms: Set financing terms for an invoice
+- confirm_payable: Confirm the invoice on-chain (IMPORTANT!)
+- get_importer_terms: View terms for an invoice
+- query_invoice_status: Check invoice status
+
+IMPORTANT:
+- Always verify importer is registered first
+- Ask for: company name, country (US, CH, UK, etc.)
+- For terms ask: invoice ID, max yield (in % or basis points), jurisdiction
+- Confirming a payable is a COMMITMENT - explain this clearly
+- Be professional - these are Fortune 500 companies
+
+EXAMPLE:
+User: "I'm Nestle, show me invoice INV-VE-001 and let me confirm it at 8.5% yield under Swiss law"
+You: Check importer → register if needed → register_terms → confirm_payable → return TXIDs
+"""
+
 SYSTEM_PROMPT_INVESTOR = SYSTEM_PROMPT_BASE + """
 CURRENT MODE: INVESTOR
 
-You are helping an INVESTOR allocate capital to receivables.
+You are helping an INVESTOR allocate capital to CONFIRMED receivables.
 
 INVESTOR WORKFLOW:
-1. Review available invoices in the marketplace
-2. Allocate shares to selected invoices
-3. Monitor status and await settlement
+1. Review available invoices (only invest in CONFIRMED payables!)
+2. Check importer terms and confirmation status
+3. Allocate shares to selected invoices
+4. Monitor status and await settlement
 
 AVAILABLE TOOLS:
 - query_invoice_status: Check invoice status
+- get_importer_terms: Check if payable is confirmed + terms
 - allocate_shares: Commit capital to an invoice
-- settle_invoice: Trigger settlement (if investor initiated)
+- settle_invoice: Trigger settlement
 
 IMPORTANT:
-- Explain yield and risk factors
+- Only invest in CONFIRMED payables (check is_confirmed!)
+- Explain yield based on importer terms
 - Confirm amounts before allocation
 - Provide transaction links
 """
@@ -222,6 +258,10 @@ def get_mode_config(mode: str) -> tuple:
     """Get system prompt and tools for a given mode."""
     if mode == "exporter":
         return SYSTEM_PROMPT_EXPORTER, TOOLS_SCHEMA_EXPORTER
+    elif mode == "importer":
+        # Filter tools schema for importer
+        importer_schema = [t for t in TOOLS_SCHEMA if t["function"]["name"] in IMPORTER_TOOLS]
+        return SYSTEM_PROMPT_IMPORTER, importer_schema
     elif mode == "investor":
         # Filter tools schema for investor
         investor_schema = [t for t in TOOLS_SCHEMA if t["function"]["name"] in INVESTOR_TOOLS]
@@ -261,13 +301,13 @@ def run_agent(mode: str = "exporter"):
         
         if user_input.lower().startswith("mode "):
             new_mode = user_input.split(" ", 1)[1].strip().lower()
-            if new_mode in ["exporter", "investor", "admin"]:
+            if new_mode in ["exporter", "importer", "investor", "admin"]:
                 mode = new_mode
                 system_prompt, tools = get_mode_config(mode)
                 messages = [{"role": "system", "content": system_prompt}]
                 print(f"\n✅ Switched to {mode.upper()} mode\n")
             else:
-                print(f"\n❌ Unknown mode: {new_mode}. Use: exporter, investor, admin\n")
+                print(f"\n❌ Unknown mode: {new_mode}. Use: exporter, importer, investor, admin\n")
             continue
         
         # Add user message
